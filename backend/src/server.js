@@ -5,12 +5,18 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { initWebSocketServer } = require('./services/websocket');
 const config = require('./config');
 const prisma = require('./lib/prisma');
 const logger = require('./lib/logger');
 const { version } = require('../package.json');
 const rateLimit = require('express-rate-limit');
+
+// Check if we have a production build
+const publicDir = path.join(__dirname, '..', 'public');
+const hasProductionBuild = fs.existsSync(path.join(publicDir, 'index.html'));
 
 // Initialize Express app
 const app = express();
@@ -243,23 +249,42 @@ const frontendProxy = createProxyMiddleware({
   },
 });
 
-// Apply proxy for frontend routes only
-app.use((req, res, next) => {
-  // Skip API routes, health check, and WebSocket path
-  if (req.path.startsWith('/api/') || req.path === '/health' || req.path.startsWith('/ws')) {
-    return next();
-  }
+// Serve frontend - either from production build or proxy to dev server
+if (hasProductionBuild) {
+  console.log('📦 Serving production build from', publicDir);
 
-  // Log Zoom Marketplace webhook validation attempts
-  if (req.headers['user-agent']?.includes('Zoom Marketplace')) {
-    console.log('⚠️ Zoom Marketplace POST to:', req.path);
-    console.log('Body:', JSON.stringify(req.body, null, 2));
-    console.log('💡 This should be going to /api/rtms/webhook instead');
-  }
+  // Serve static files
+  app.use(express.static(publicDir));
 
-  // Use the proxy middleware for frontend requests
-  frontendProxy(req, res, next);
-});
+  // SPA fallback - serve index.html for all non-API routes
+  app.use((req, res, next) => {
+    // Skip API routes, health check, and WebSocket path
+    if (req.path.startsWith('/api/') || req.path === '/health' || req.path.startsWith('/ws')) {
+      return next();
+    }
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+} else {
+  console.log('⚠️ No production build found, proxying to frontend dev server');
+
+  // Apply proxy for frontend routes only
+  app.use((req, res, next) => {
+    // Skip API routes, health check, and WebSocket path
+    if (req.path.startsWith('/api/') || req.path === '/health' || req.path.startsWith('/ws')) {
+      return next();
+    }
+
+    // Log Zoom Marketplace webhook validation attempts
+    if (req.headers['user-agent']?.includes('Zoom Marketplace')) {
+      console.log('⚠️ Zoom Marketplace POST to:', req.path);
+      console.log('Body:', JSON.stringify(req.body, null, 2));
+      console.log('💡 This should be going to /api/rtms/webhook instead');
+    }
+
+    // Use the proxy middleware for frontend requests
+    frontendProxy(req, res, next);
+  });
+}
 
 // =============================================================================
 // ERROR HANDLING
